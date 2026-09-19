@@ -1,0 +1,18 @@
+# Voice assistant 'Deeks' dependencies
+
+SpeechRecognition
+PyAudio
+# Text-to-Speech
+edge-tts
+pygame
+# Hotkey support
+pynput
+# LLM Integration (e.g., openai, google-generativeai)
+ollama
+# Volume Control
+pycaw
+# Reminders scheduler
+schedule
+# Clipboard support
+pyperclip
+

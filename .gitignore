@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env/
+
+# Logs & runtime artifacts
+logs/
+*.log
+log/
+
+# Screenshots
+screenshots/
+
+# Sensitive memory / personal data
+data/notes.json
+data/reminders.json
+memory/data.json
+
+# Temp / scratch files
+scratch/
+*.tmp
+*.bak
+*.swp
+
+# IDE & OS files
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Audio temp files
+deeks_tts_*.mp3
+*.mp3
+
+# Status files (runtime-generated)
+logs/status.json
+logs/deeks.pid
