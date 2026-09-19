@@ -27,6 +27,7 @@ screenshots/
 data/notes.json
 data/reminders.json
 memory/data.json
+memory/schedule.json
 
 # Temp / scratch files
 scratch/

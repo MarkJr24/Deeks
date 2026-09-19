@@ -35,7 +35,8 @@ from skills.volume_control import process_volume_command
 from skills.system_utils import lock_pc, take_screenshot
 from skills.power_control import handle_power_command
 from skills.reminders import process_reminder_command, init_reminders
-from skills.clipboard_notes import process_clipboard_notes_command
+from skills.clipboard_notes import process_clipboard_notes_command, read_clipboard, read_notes, save_note, clear_notes
+from skills.intent_router import classify_intent
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -451,13 +452,230 @@ def execute_command(text: str) -> bool:
             speak("I encountered an error trying to open that application.")
             
     else:
-        logger.info(f"Processing query: '{text}'")
-        try:
-            llm_response = handle_general_query(text)
-            speak(llm_response)
-        except Exception as e:
-            logger.exception(f"Error handling assistant query: {e}")
-            speak("I'm not sure how to help with that right now.")
+        logger.info(f"No fast keyword match for '{text}'. Running LLM intent classification...")
+        intent_data = classify_intent(clean_text)
+        intent = intent_data["intent"]
+        params = intent_data.get("params", {})
+        
+        if intent == "EXIT":
+            speak("Goodbye! Shutting down.")
+            return False
+            
+        elif intent == "SHUTDOWN_PC":
+            return handle_power_command("shutdown", speak, listen)
+            
+        elif intent == "RESTART_PC":
+            return handle_power_command("restart", speak, listen)
+            
+        elif intent == "LOCK_PC":
+            try:
+                speak("Locking your PC")
+                lock_pc()
+            except Exception as e:
+                logger.exception(f"Error locking PC: {e}")
+                speak("I couldn't lock your PC right now.")
+                
+        elif intent == "SCREENSHOT":
+            try:
+                msg = take_screenshot()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error taking screenshot: {e}")
+                speak("I couldn't take a screenshot right now.")
+                
+        elif intent == "MEETING_MODE_ON":
+            save_memory("meeting_mode", True)
+            speak("Meeting mode enabled. Background voice activation and speech are muted until you exit meeting mode.", force=True)
+            print("\n[Meeting Mode ENABLED - Deeks is muted and wake word paused]")
+            return True
+            
+        elif intent == "MEETING_MODE_OFF":
+            save_memory("meeting_mode", False)
+            speak("Meeting mode disabled. I am back online.", force=True)
+            print("\n[Meeting Mode DISABLED - Normal operations resumed]")
+            return True
+            
+        elif intent == "VOLUME_ADJUST":
+            try:
+                response_text = process_volume_command(clean_text)
+                speak(response_text)
+            except Exception as e:
+                logger.exception(f"Error processing volume command: {e}")
+                speak("I couldn't adjust the volume right now.")
+                
+        elif intent in ("BRIEFING", "BRIEFING_SCHEDULE"):
+            try:
+                briefing_text = get_daily_briefing()
+                speak(briefing_text)
+            except Exception as e:
+                logger.exception(f"Error generating daily briefing: {e}")
+                speak("I encountered an error generating your daily briefing.")
+                
+        elif intent == "WEATHER":
+            try:
+                city = params.get("city")
+                if not city or city.lower() == "null":
+                    city = load_memory("default_city") or "Chennai"
+                save_memory("default_city", city)
+                result = get_weather(city)
+                if result.get("success"):
+                    speak(result["summary"])
+                else:
+                    speak(result.get("error", "I couldn't fetch the weather right now."))
+            except Exception as e:
+                logger.exception(f"Error processing weather command: {e}")
+                speak("I encountered an error retrieving the weather.")
+                
+        elif intent == "SCHEDULE_GET":
+            try:
+                date_kw = params.get("day", "today")
+                schedule_msg = get_schedule(date_kw)
+                speak(schedule_msg)
+            except Exception as e:
+                logger.exception(f"Error checking schedule: {e}")
+                speak("I encountered an error looking up your schedule.")
+                
+        elif intent == "SCHEDULE_ADD":
+            try:
+                evt_text = params.get("event_text", text)
+                success, msg = add_event_from_text(evt_text)
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error adding schedule event: {e}")
+                speak("I encountered an error saving that event.")
+                
+        elif intent == "NEWS":
+            try:
+                news_result = get_top_headlines()
+                speak(news_result["summary"])
+            except Exception as e:
+                logger.exception(f"Error fetching news: {e}")
+                speak("I encountered an error retrieving the news.")
+                
+        elif intent == "SEARCH":
+            query = params.get("query", clean_text)
+            try:
+                speak("Here's what I found.")
+                perform_search(query)
+            except Exception as e:
+                logger.exception(f"Error performing search: {e}")
+                speak("I encountered an error opening the search results.")
+                
+        elif intent == "REMINDER":
+            try:
+                rem_text = params.get("reminder_text", clean_text)
+                if not rem_text.lower().startswith("remind me"):
+                    rem_text = f"remind me {rem_text}"
+                response_text = process_reminder_command(rem_text)
+                speak(response_text)
+            except Exception as e:
+                logger.exception(f"Error processing reminder command: {e}")
+                speak("I encountered an error setting that reminder.")
+                
+        elif intent == "TIMER":
+            try:
+                mins = params.get("minutes", 5)
+                from skills.timer_skill import start_timer
+                def timer_finished():
+                    try:
+                        import pythoncom
+                        pythoncom.CoInitialize()
+                        import win32com.client
+                        speaker = win32com.client.Dispatch("SAPI.SpVoice")
+                        speaker.Speak("Time is up!")
+                    except Exception:
+                        pass
+                start_timer(float(mins), timer_finished)
+                speak(f"Timer set for {mins} minutes.")
+            except Exception as e:
+                logger.exception(f"Error setting timer: {e}")
+                speak("I encountered an error setting the timer.")
+                
+        elif intent == "CLIPBOARD_READ":
+            try:
+                speak(read_clipboard())
+            except Exception as e:
+                logger.exception(f"Error reading clipboard: {e}")
+                speak("I couldn't read your clipboard right now.")
+
+        elif intent == "NOTES_READ":
+            try:
+                speak(read_notes())
+            except Exception as e:
+                logger.exception(f"Error reading notes: {e}")
+                speak("I couldn't read your notes right now.")
+
+        elif intent == "NOTES_CLEAR":
+            try:
+                speak(clear_notes())
+            except Exception as e:
+                logger.exception(f"Error clearing notes: {e}")
+                speak("I couldn't clear your notes right now.")
+
+        elif intent == "NOTES_SAVE":
+            try:
+                note_txt = params.get("note_text", clean_text)
+                speak(save_note(note_txt))
+            except Exception as e:
+                logger.exception(f"Error saving note: {e}")
+                speak("I encountered an error saving your note.")
+                
+        elif intent == "MEMORY_SAVE":
+            fact = params.get("fact_text", clean_text)
+            try:
+                add_user_fact(fact)
+                speak(f"Got it. I'll remember that {fact}")
+            except Exception as e:
+                logger.exception(f"Error saving memory fact: {e}")
+                speak("I encountered an error saving that to memory.")
+                
+        elif intent == "MEMORY_READ":
+            try:
+                recalled = load_memory("last_thing")
+                if recalled:
+                    speak(f"You told me to remember: {recalled}")
+                else:
+                    speak("I don't have anything saved in my memory yet.")
+            except Exception as e:
+                logger.exception(f"Error loading memory: {e}")
+                speak("I encountered an error retrieving memory.")
+                
+        elif intent == "TIME":
+            try:
+                current_time = get_current_time()
+                speak(f"The current time is {current_time}.")
+            except Exception as e:
+                logger.exception(f"Error fetching current time: {e}")
+                speak("I encountered an error getting the current time.")
+                
+        elif intent == "OPEN_APP":
+            app_name = params.get("app_name", clean_text)
+            try:
+                if open_application(app_name):
+                    speak(f"Opening {app_name}.")
+                else:
+                    speak(f"I don't know how to open {app_name} yet.")
+            except Exception as e:
+                logger.exception(f"Error opening application '{app_name}': {e}")
+                speak("I encountered an error trying to open that application.")
+                
+        elif intent == "CLOSE_APP":
+            app_name = params.get("app_name", clean_text)
+            try:
+                response_msg = close_application(app_name)
+                speak(response_msg)
+            except Exception as e:
+                logger.exception(f"Error closing application '{app_name}': {e}")
+                speak("I couldn't close that.")
+                
+        else:
+            logger.info(f"Processing query via Ollama general conversational intelligence: '{text}'")
+            try:
+                llm_response = handle_general_query(text)
+                speak(llm_response)
+            except Exception as e:
+                logger.exception(f"Error handling assistant query: {e}")
+                speak("I'm not sure how to help with that right now.")
 
     return True
 
