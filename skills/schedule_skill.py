@@ -172,3 +172,31 @@ def get_schedule(date_keyword_or_text: str = "today") -> str:
     except Exception as e:
         logger.exception(f"Error fetching schedule for '{date_keyword_or_text}': {e}")
         return "I encountered an error looking up your schedule."
+
+def clear_schedule(target_day: str = None) -> str:
+    """
+    Clears schedule events.
+    If target_day is provided (e.g. 'today', 'tomorrow'), clears events for that day.
+    If target_day is None or 'all', clears all schedule events.
+    """
+    try:
+        events = _load_events()
+        if not events:
+            return "Your schedule is already clear."
+
+        if target_day and target_day.lower() not in ["all", "everything"]:
+            date_iso, day_label, _ = parse_relative_date(target_day)
+            remaining = [e for e in events if e.get("date") != date_iso]
+            removed_count = len(events) - len(remaining)
+            if removed_count == 0:
+                return f"You had no appointments scheduled for {day_label}."
+            _save_events(remaining)
+            logger.info(f"Cleared {removed_count} schedule event(s) for {day_label}.")
+            return f"Cleared all appointments for {day_label}."
+        else:
+            _save_events([])
+            logger.info("Cleared all schedule events.")
+            return "Cleared all your appointments and schedule events."
+    except Exception as e:
+        logger.exception(f"Error clearing schedule: {e}")
+        return "I encountered an error clearing your schedule."

@@ -11,6 +11,7 @@ import edge_tts
 import pygame
 from logger import logger
 from memory.memory import load_memory
+from skills.system_utils import check_meeting_apps_running
 
 # Default and recommended natural neural voices
 DEFAULT_VOICE = os.getenv("DEEKS_VOICE", "en-US-AriaNeural")
@@ -58,7 +59,7 @@ def speak(text: str, voice: str = None, force: bool = False):
     """
     Speaks the given text using Microsoft Edge's natural neural TTS (edge-tts)
     and plays it smoothly via pygame mixer with automatic temp file cleanup.
-    If meeting_mode is active, audio is suppressed to avoid interrupting calls.
+    If meeting_mode is active or meeting apps are running, audio is suppressed to avoid interrupting calls.
     """
     if not text or not str(text).strip():
         return
@@ -67,14 +68,13 @@ def speak(text: str, voice: str = None, force: bool = False):
 
     # Check Meeting Mode protection
     try:
-        if not force and load_memory("meeting_mode"):
+        if not force and (load_memory("meeting_mode") or check_meeting_apps_running()):
             logger.info(f"[Meeting Mode Active] Suppressing audio output: '{text_to_speak}'")
             print(f"\n[Meeting Mode Silent Output]: {text_to_speak}")
             return
     except Exception:
         pass
 
-    selected_voice = voice or DEFAULT_VOICE
     selected_voice = voice or DEFAULT_VOICE
     temp_file_path = None
 

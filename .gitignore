@@ -23,7 +23,10 @@ log/
 # Screenshots
 screenshots/
 
-# Sensitive memory / personal data
+# Sensitive memory / personal data / credentials
+.env
+.spotify_cache*
+.cache*
 data/notes.json
 data/reminders.json
 memory/data.json

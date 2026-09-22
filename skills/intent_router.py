@@ -21,6 +21,7 @@ VALID INTENTS:
 - WEATHER: Check weather. Extract "city" if mentioned, else null.
 - SCHEDULE_GET: View schedule / agenda for today, tomorrow, or a specific day. Extract "day" if mentioned.
 - SCHEDULE_ADD: Add an event to schedule. Extract "event_text".
+- SCHEDULE_CLEAR: Clear, delete, or wipe schedule events/appointments. Extract "day" if mentioned (e.g. "today", "tomorrow", "all").
 - NEWS: Fetch headlines / news updates.
 - SEARCH: Web search / look up information on Google/web. Extract "query".
 - REMINDER: Set or cancel a reminder. Extract "reminder_text".
@@ -34,6 +35,19 @@ VALID INTENTS:
 - TIME: Ask current time.
 - OPEN_APP: Open or launch an application. Extract "app_name".
 - CLOSE_APP: Close or quit an application. Extract "app_name".
+- OPEN_WEBSITE: Open a specific website. Extract "site_name".
+- SPOTIFY_PLAY: Play a specific song, artist, album, or playlist on Spotify. Extract "query".
+- SPOTIFY_PAUSE: Pause music playback explicitly on Spotify.
+- SPOTIFY_RESUME: Resume music playback explicitly on Spotify.
+- SPOTIFY_NEXT: Skip to next song explicitly on Spotify.
+- SPOTIFY_PREVIOUS: Go back to previous song explicitly on Spotify.
+- MEDIA_PLAY_PAUSE: Play or pause video / media playback (YouTube, video, media player, generic play/pause).
+- MEDIA_NEXT: Skip or go to next video / media track (generic skip/next).
+- MEDIA_PREVIOUS: Go back to previous video / media track (generic previous/go back).
+- FILE_OPEN: Open a file or folder by name. Extract "target_name".
+- FILE_CREATE_FOLDER: Create a new folder. Extract "folder_name".
+- FILE_DELETE: Delete or trash a file or folder. Extract "target_name".
+- FILE_RENAME: Rename a file or folder. Extract "old_name", "new_name".
 - GENERAL_QUERY: General question, chat, knowledge query, or anything not covered above.
 
 OUTPUT FORMAT:
@@ -61,7 +75,7 @@ def classify_intent(text: str) -> dict:
                 {'role': 'system', 'content': INTENT_SYSTEM_PROMPT},
                 {'role': 'user', 'content': text}
             ],
-            options={'temperature': 0.1}
+            options={'temperature': 0.0, 'num_predict': 40}
         )
 
         content = response['message']['content'].strip()

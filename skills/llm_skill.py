@@ -25,16 +25,20 @@ def handle_general_query(query: str) -> str:
             
         logger.info("Sending query to local assistant intelligence...")
         
-        response = ollama.chat(model='phi4-mini', messages=[
-            {
-                'role': 'system',
-                'content': system_prompt
-            },
-            {
-                'role': 'user',
-                'content': query
-            }
-        ])
+        response = ollama.chat(
+            model='phi4-mini',
+            messages=[
+                {
+                    'role': 'system',
+                    'content': system_prompt
+                },
+                {
+                    'role': 'user',
+                    'content': query
+                }
+            ],
+            options={'temperature': 0.7, 'num_predict': 120}
+        )
         
         reply = response['message']['content'].strip()
         logger.info(f"Assistant response: {reply}")

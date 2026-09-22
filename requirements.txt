@@ -15,4 +15,9 @@ pycaw
 schedule
 # Clipboard support
 pyperclip
+# Spotify Web API
+spotipy
+# File Trash Recycling
+send2trash
+
 

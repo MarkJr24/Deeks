@@ -28,14 +28,33 @@ from skills.time_skill import get_current_time
 from skills.search_skill import perform_search
 from skills.open_app_skill import open_application, close_application, is_known_app
 from skills.weather_skill import get_weather
-from skills.schedule_skill import add_event_from_text, get_schedule
+from skills.schedule_skill import add_event_from_text, get_schedule, clear_schedule
 from skills.news_skill import get_top_headlines
 from skills.briefing_skill import get_daily_briefing
 from skills.volume_control import process_volume_command
-from skills.system_utils import lock_pc, take_screenshot
+from skills.system_utils import lock_pc, take_screenshot, check_meeting_apps_running, ensure_ollama_running
 from skills.power_control import handle_power_command
 from skills.reminders import process_reminder_command, init_reminders
 from skills.clipboard_notes import process_clipboard_notes_command, read_clipboard, read_notes, save_note, clear_notes
+from skills.web_actions import search_web, open_site, is_known_site, is_probable_url
+from skills.spotify_skill import (
+    play_track as spotify_play,
+    pause_playback as spotify_pause,
+    resume_playback as spotify_resume,
+    next_track as spotify_next,
+    previous_track as spotify_previous,
+)
+from skills.media_control_skill import (
+    play_pause_media,
+    next_track_media,
+    previous_track_media,
+)
+from skills.file_management_skill import (
+    open_file_or_folder,
+    create_folder,
+    delete_file_or_folder,
+    rename_file_or_folder,
+)
 from skills.intent_router import classify_intent
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,31 +62,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 STATUS_FILE = os.path.join(LOG_DIR, "status.json")
 PID_FILE = os.path.join(LOG_DIR, "deeks.pid")
-
-# ── Cache for check_meeting_apps_running() — refreshed every 20 s ──────────
-_meeting_cache: dict = {"value": False, "ts": 0.0}
-_MEETING_CACHE_TTL = 20  # seconds
-
-def check_meeting_apps_running() -> bool:
-    """Checks if common video call / meeting applications are running.
-    Result is cached for 20 s to avoid spawning a tasklist subprocess every loop.
-    """
-    global _meeting_cache
-    now = time.time()
-    if now - _meeting_cache["ts"] < _MEETING_CACHE_TTL:
-        return _meeting_cache["value"]
-    try:
-        import subprocess
-        output = subprocess.check_output(
-            "tasklist", shell=True, text=True, errors="ignore", timeout=3
-        ).lower()
-        meeting_apps = ["zoom.exe", "teams.exe", "ms-teams.exe", "msteams.exe",
-                        "webexhost.exe", "ciscocollabhost.exe", "skype.exe"]
-        result = any(app in output for app in meeting_apps)
-    except Exception:
-        result = False
-    _meeting_cache = {"value": result, "ts": now}
-    return result
 
 def update_status(is_running=True):
     """Writes runtime status and heartbeat to logs/status.json and logs/deeks.pid."""
@@ -284,6 +278,23 @@ def execute_command(text: str) -> bool:
             logger.exception(f"Error adding schedule event: {e}")
             speak("I encountered an error saving that event.")
         
+    elif any(k in clean_text for k in [
+        "clear appointments", "clear my appointments", "delete appointments", "delete my appointments",
+        "clear schedule", "clear my schedule", "delete schedule", "delete my schedule",
+        "clear events", "clear my events", "delete all events", "clear all appointments",
+        "remove appointments", "remove my appointments", "cancel appointments"
+    ]):
+        try:
+            day = None
+            if "tomorrow" in clean_text:
+                day = "tomorrow"
+            elif "today" in clean_text:
+                day = "today"
+            speak(clear_schedule(day))
+        except Exception as e:
+            logger.exception(f"Error clearing schedule: {e}")
+            speak("I encountered an error clearing your schedule.")
+            
     elif any(phrase in clean_text for phrase in ["what's the news", "what is the news", "give me the headlines", "what are the headlines", "tell me the news", "latest news", "top headlines", "the headlines", "read the news"]):
         try:
             news_result = get_top_headlines()
@@ -292,11 +303,11 @@ def execute_command(text: str) -> bool:
             logger.exception(f"Error fetching news: {e}")
             speak("I encountered an error retrieving the news.")
             
-    elif clean_text.startswith("search for ") or clean_text.startswith("google ") or clean_text.startswith("look up "):
-        query = re.sub(r'^(?:search for|google|look up)\s+', '', clean_text).strip()
+    elif clean_text.startswith("search the web for ") or clean_text.startswith("search web for ") or clean_text.startswith("search for ") or clean_text.startswith("google ") or clean_text.startswith("look up "):
+        query = re.sub(r'^(?:search the web for|search web for|search for|google|look up)\s+', '', clean_text).strip()
         try:
-            speak("Here's what I found.")
-            perform_search(query)
+            msg = search_web(query)
+            speak(msg)
         except Exception as e:
             logger.exception(f"Error performing search for '{query}': {e}")
             speak("I encountered an error opening the search results.")
@@ -304,8 +315,8 @@ def execute_command(text: str) -> bool:
     elif clean_text.startswith("what is ") and "time" not in clean_text and "weather" not in clean_text and "schedule" not in clean_text and "news" not in clean_text:
         query = clean_text[len("what is "):].strip()
         try:
-            speak("Here's what I found.")
-            perform_search(query)
+            msg = search_web(query)
+            speak(msg)
         except Exception as e:
             logger.exception(f"Error searching for '{query}': {e}")
             speak("I encountered an error searching for that.")
@@ -434,6 +445,125 @@ def execute_command(text: str) -> bool:
             logger.exception(f"Error closing application '{app_name}': {e}")
             speak("I couldn't close that.")
 
+    elif re.search(r'\bplay\s+(.+?)\s+on\s+spotify\b', clean_text) or re.search(r'\bplay\s+spotify\s+(.+)$', clean_text):
+        m = re.search(r'\bplay\s+(.+?)\s+on\s+spotify\b', text, re.IGNORECASE) or re.search(r'\bplay\s+spotify\s+(.+)$', text, re.IGNORECASE)
+        query = m.group(1).strip() if m else clean_text
+        try:
+            msg = spotify_play(query)
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error executing Spotify play for '{query}': {e}")
+            speak("I encountered an error trying to play that on Spotify.")
+
+    elif "spotify" in clean_text:
+        if any(p in clean_text for p in ["pause", "stop"]):
+            try:
+                msg = spotify_pause()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error pausing Spotify: {e}")
+                speak("I couldn't pause Spotify right now.")
+        elif any(p in clean_text for p in ["resume", "unpause", "play"]):
+            try:
+                msg = spotify_resume()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error resuming Spotify: {e}")
+                speak("I couldn't resume Spotify right now.")
+        elif any(p in clean_text for p in ["skip", "next"]):
+            try:
+                msg = spotify_next()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error skipping Spotify track: {e}")
+                speak("I couldn't skip the song on Spotify right now.")
+        elif any(p in clean_text for p in ["previous", "back", "last"]):
+            try:
+                msg = spotify_previous()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error going to previous Spotify track: {e}")
+                speak("I couldn't go back to the previous song on Spotify right now.")
+
+    elif any(p in clean_text for p in [
+        "play video", "pause video", "pause the video", "pause media", "play media",
+        "pause music", "pause the music", "pause song", "pause playback", "pause the playback",
+        "resume video", "resume media", "resume music", "resume playback", "unpause video",
+        "toggle playback", "toggle media", "pause the music", "pause", "resume"
+    ]) or clean_text in ["play video", "pause video", "pause", "resume"]:
+        try:
+            msg = play_pause_media()
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error executing media play/pause: {e}")
+            speak("I couldn't control media playback right now.")
+
+    elif any(p in clean_text for p in ["skip video", "next video", "next track", "skip track", "play next video", "play next track", "go next"]) or clean_text in ["skip", "next"]:
+        try:
+            msg = next_track_media()
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error skipping media track: {e}")
+            speak("I couldn't skip to the next track right now.")
+
+    elif any(p in clean_text for p in ["previous video", "previous track", "last video", "play previous video", "play previous track", "go back"]) or clean_text in ["previous", "go back"]:
+        try:
+            msg = previous_track_media()
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error going to previous media track: {e}")
+            speak("I couldn't go back to the previous track right now.")
+
+    elif re.search(r'\b(?:create|make)\s+(?:a\s+)?folder\s+(?:called\s+)?(.+)$', clean_text):
+        m = re.search(r'\b(?:create|make)\s+(?:a\s+)?folder\s+(?:called\s+)?(.+)$', clean_text)
+        folder_name = m.group(1).strip()
+        try:
+            msg = create_folder(folder_name)
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error creating folder '{folder_name}': {e}")
+            speak("I encountered an error creating that folder.")
+
+    elif re.search(r'\bdelete\s+(?:file|folder)\s+(.+)$', clean_text) or (clean_text.startswith("delete ") and not any(k in clean_text for k in ["appointments", "schedule", "events", "notes", "reminders", "deeks", "pc", "computer"])):
+        target = re.sub(r'^delete\s+(?:file|folder)\s+', '', clean_text).strip()
+        if target.startswith("delete "):
+            target = target[7:].strip()
+        try:
+            msg = delete_file_or_folder(target, speak_func=speak, listen_func=listen)
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error deleting target '{target}': {e}")
+            speak("I encountered an error deleting that.")
+
+    elif re.search(r'\brename\s+(.+?)\s+to\s+(.+)$', clean_text):
+        m = re.search(r'\brename\s+(.+?)\s+to\s+(.+)$', clean_text)
+        old_n = m.group(1).strip()
+        new_n = m.group(2).strip()
+        try:
+            msg = rename_file_or_folder(old_n, new_n, speak_func=speak, listen_func=listen)
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error renaming '{old_n}' to '{new_n}': {e}")
+            speak("I encountered an error renaming that.")
+
+    elif clean_text.startswith("open file ") or clean_text.startswith("open folder "):
+        target = re.sub(r'^open\s+(?:file|folder)\s+', '', clean_text).strip()
+        try:
+            msg = open_file_or_folder(target, speak_func=speak, listen_func=listen)
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error opening file/folder '{target}': {e}")
+            speak("I encountered an error opening that file or folder.")
+
+    elif any(clean_text.startswith(p) for p in ["open website ", "open site ", "open web "]) or (clean_text.startswith("open ") and (is_known_site(re.sub(r'^open\s+', '', clean_text).strip()) or is_probable_url(re.sub(r'^open\s+', '', clean_text).strip()))):
+        site_name = re.sub(r'^(?:open website|open site|open web|open)\s+', '', clean_text).strip()
+        try:
+            msg = open_site(site_name)
+            speak(msg)
+        except Exception as e:
+            logger.exception(f"Error opening website '{site_name}': {e}")
+            speak("I encountered an error trying to open that website.")
+
     elif re.search(r'\b(?:open|launch|start|run)\b', clean_text) or is_known_app(clean_text):
         app_match = re.search(r'\b(?:open|launch|start|run)(?:\s+up)?\s+(.+)$', clean_text)
         if app_match:
@@ -544,6 +674,14 @@ def execute_command(text: str) -> bool:
                 logger.exception(f"Error adding schedule event: {e}")
                 speak("I encountered an error saving that event.")
                 
+        elif intent == "SCHEDULE_CLEAR":
+            try:
+                day = params.get("day")
+                speak(clear_schedule(day))
+            except Exception as e:
+                logger.exception(f"Error clearing schedule: {e}")
+                speak("I encountered an error clearing your schedule.")
+                
         elif intent == "NEWS":
             try:
                 news_result = get_top_headlines()
@@ -555,8 +693,8 @@ def execute_command(text: str) -> bool:
         elif intent == "SEARCH":
             query = params.get("query", clean_text)
             try:
-                speak("Here's what I found.")
-                perform_search(query)
+                msg = search_web(query)
+                speak(msg)
             except Exception as e:
                 logger.exception(f"Error performing search: {e}")
                 speak("I encountered an error opening the search results.")
@@ -667,6 +805,121 @@ def execute_command(text: str) -> bool:
             except Exception as e:
                 logger.exception(f"Error closing application '{app_name}': {e}")
                 speak("I couldn't close that.")
+
+        elif intent == "OPEN_WEBSITE":
+            site_name = params.get("site_name", clean_text)
+            if site_name.lower().startswith("open "):
+                site_name = site_name[5:].strip()
+            try:
+                msg = open_site(site_name)
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error opening website '{site_name}': {e}")
+                speak("I encountered an error trying to open that website.")
+
+        elif intent == "SPOTIFY_PLAY":
+            query = params.get("query", clean_text)
+            query = re.sub(r'\b(?:on\s+spotify|play\s+on\s+spotify|play)\b', '', query, flags=re.IGNORECASE).strip()
+            try:
+                msg = spotify_play(query)
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error executing Spotify play for '{query}': {e}")
+                speak("I encountered an error trying to play that on Spotify.")
+
+        elif intent == "SPOTIFY_PAUSE":
+            try:
+                msg = spotify_pause()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error pausing Spotify: {e}")
+                speak("I couldn't pause Spotify right now.")
+
+        elif intent == "SPOTIFY_RESUME":
+            try:
+                msg = spotify_resume()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error resuming Spotify: {e}")
+                speak("I couldn't resume Spotify right now.")
+
+        elif intent == "SPOTIFY_NEXT":
+            try:
+                msg = spotify_next()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error skipping Spotify track: {e}")
+                speak("I couldn't skip to the next track right now.")
+
+        elif intent == "SPOTIFY_PREVIOUS":
+            try:
+                msg = spotify_previous()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error going to previous Spotify track: {e}")
+                speak("I couldn't go back to the previous track right now.")
+
+        elif intent == "MEDIA_PLAY_PAUSE":
+            try:
+                msg = play_pause_media()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error triggering media play/pause: {e}")
+                speak("I couldn't control media playback right now.")
+
+        elif intent == "MEDIA_NEXT":
+            try:
+                msg = next_track_media()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error triggering next media track: {e}")
+                speak("I couldn't skip to the next track right now.")
+
+        elif intent == "MEDIA_PREVIOUS":
+            try:
+                msg = previous_track_media()
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error triggering previous media track: {e}")
+                speak("I couldn't go back to the previous track right now.")
+
+        elif intent == "FILE_OPEN":
+            target = params.get("target_name", clean_text)
+            try:
+                msg = open_file_or_folder(target, speak_func=speak, listen_func=listen)
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error opening file/folder '{target}': {e}")
+                speak("I encountered an error opening that file or folder.")
+
+        elif intent == "FILE_CREATE_FOLDER":
+            folder_n = params.get("folder_name", clean_text)
+            try:
+                msg = create_folder(folder_n)
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error creating folder '{folder_n}': {e}")
+                speak("I encountered an error creating that folder.")
+
+        elif intent == "FILE_DELETE":
+            target = params.get("target_name", clean_text)
+            try:
+                msg = delete_file_or_folder(target, speak_func=speak, listen_func=listen)
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error deleting '{target}': {e}")
+                speak("I encountered an error deleting that.")
+
+        elif intent == "FILE_RENAME":
+            old_n = params.get("old_name", "")
+            new_n = params.get("new_name", "")
+            try:
+                msg = rename_file_or_folder(old_n, new_n, speak_func=speak, listen_func=listen)
+                speak(msg)
+            except Exception as e:
+                logger.exception(f"Error renaming '{old_n}' to '{new_n}': {e}")
+                speak("I encountered an error renaming that.")
+
                 
         else:
             logger.info(f"Processing query via Ollama general conversational intelligence: '{text}'")
@@ -684,6 +937,9 @@ def main():
     print("Deeks is starting...")
     update_status(is_running=True)
     
+    # Auto-ensure Ollama server is running in background
+    ensure_ollama_running()
+    
     try:
         speak("Hey, I'm online.")
     except Exception as e:
@@ -696,8 +952,19 @@ def main():
     import queue
     
     trigger_queue = queue.Queue()
+    _last_hotkey_trigger_time = 0.0
+    HOTKEY_DEBOUNCE_INTERVAL = 1.5  # seconds
     
     def hotkey_callback():
+        nonlocal _last_hotkey_trigger_time
+        now = time.time()
+        if now - _last_hotkey_trigger_time < HOTKEY_DEBOUNCE_INTERVAL:
+            logger.info(
+                f"[Hotkey Debounced] Ignored rapid Ctrl+Alt+D trigger ({now - _last_hotkey_trigger_time:.2f}s since last trigger)."
+            )
+            return
+        _last_hotkey_trigger_time = now
+        logger.info("=== [Hotkey Triggered: Ctrl+Alt+D] ===")
         trigger_queue.put(("HOTKEY", None))
         
     try:

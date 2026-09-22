@@ -186,7 +186,11 @@ class TestDeeksResilience(unittest.TestCase):
         # Check schedule command
         res2 = main.execute_command("what's on my schedule tomorrow")
         self.assertTrue(res2)
-        mock_speak.called
+
+        # Clear schedule command
+        res3 = main.execute_command("clear my appointments")
+        self.assertTrue(res3)
+        mock_speak.assert_called_with("Cleared all your appointments and schedule events.")
 
     @patch("urllib.request.urlopen")
     def test_news_skill_get_top_headlines(self, mock_urlopen):
@@ -365,5 +369,305 @@ class TestDeeksResilience(unittest.TestCase):
         mock_speak.assert_any_call("Are you sure you want to restart? Say yes to confirm.")
         mock_speak.assert_any_call("Restart cancelled.")
 
+    @patch("skills.voice_output._init_mixer")
+    @patch("skills.voice_output._run_coroutine")
+    @patch("skills.voice_output.load_memory")
+    @patch("skills.voice_output.check_meeting_apps_running")
+    def test_speak_suppresses_audio_when_meeting_apps_running(self, mock_check_apps, mock_load_memory, mock_run_coro, mock_init_mixer):
+        """Verify speak() suppresses audio when meeting_mode memory is False but Zoom/Teams is running."""
+        from skills.voice_output import speak
+
+        mock_load_memory.return_value = False
+        mock_check_apps.return_value = True
+
+        # When force=False (default), speak() should suppress audio
+        speak("Reminder: Call team")
+        mock_run_coro.assert_not_called()
+
+        # When force=True, speak() should bypass suppression and proceed to TTS execution
+        with patch("pygame.mixer.music") as mock_music:
+            mock_music.get_busy.return_value = False
+            speak("Meeting mode enabled", force=True)
+            mock_run_coro.assert_called_once()
+
+    @patch("skills.voice_input.time.sleep")
+    @patch("skills.voice_input.sr.Microphone")
+    @patch("skills.voice_input.sr.Recognizer")
+    def test_listen_mic_busy_retry(self, mock_rec_cls, mock_mic_cls, mock_sleep):
+        """Verify listen() retries on OSError when opening sr.Microphone() before succeeding."""
+        mock_rec = MagicMock()
+        mock_rec_cls.return_value = mock_rec
+        mock_rec.listen.return_value = MagicMock()
+        mock_rec.recognize_google.return_value = "hello"
+
+        mock_source = MagicMock()
+        mock_mic1 = MagicMock()
+        mock_mic1.__enter__.side_effect = OSError("Device busy")
+        mock_mic2 = MagicMock()
+        mock_mic2.__enter__.return_value = mock_source
+
+        mock_mic_cls.side_effect = [mock_mic1, mock_mic2]
+
+        res = voice_input.listen()
+        self.assertEqual(res, "hello")
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    def test_reminders_list_and_birthday_parsing(self):
+        """Verify list reminders feature and birthday reminder date/time parsing."""
+        from skills.reminders import process_reminder_command, _save_reminders, _load_reminders
+
+        # 1. Test empty list reminders
+        _save_reminders([])
+        res_empty = process_reminder_command("what reminders do I have")
+        self.assertEqual(res_empty, "You don't have any reminders set")
+
+        # 2. Test setting a birthday reminder for October 5th at 9am
+        res_add = process_reminder_command("remind me about Mark's birthday on October 5th at 9am")
+        self.assertIn("Mark's birthday", res_add)
+        self.assertIn("October 5 at 9:00 AM", res_add)
+
+        # Verify it was saved to reminders.json
+        saved = _load_reminders()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["message"], "Mark's birthday")
+        self.assertIn("T09:00:00", saved[0]["run_at_iso"])
+
+        # 3. Test list reminders now returns the saved birthday reminder
+        res_list = process_reminder_command("list my reminders")
+        self.assertIn("Mark's birthday", res_list)
+        self.assertIn("October 5 at 9:00 AM", res_list)
+
+        # 4. Clean up
+        _save_reminders([])
+
+    @patch("webbrowser.open")
+    def test_web_actions_search_web(self, mock_web_open):
+        """Test search_web URL encoding, browser opening, and confirmation message."""
+        from skills.web_actions import search_web
+
+        res = search_web("artificial intelligence")
+        self.assertEqual(res, "Searching the web for artificial intelligence.")
+        mock_web_open.assert_called_once_with("https://www.google.com/search?q=artificial+intelligence")
+
+        # Test empty query handling
+        res_empty = search_web("")
+        self.assertEqual(res_empty, "What would you like me to search for?")
+
+    @patch("webbrowser.open")
+    def test_web_actions_open_site(self, mock_web_open):
+        """Test open_site for mapped sites, raw URLs, and unrecognized sites."""
+        from skills.web_actions import open_site
+
+        # 1. Known sites
+        known_sites = {
+            "youtube": "https://www.youtube.com",
+            "spotify": "https://open.spotify.com",
+            "gmail": "https://mail.google.com",
+            "github": "https://github.com",
+            "reddit": "https://www.reddit.com",
+        }
+        for name, expected_url in known_sites.items():
+            mock_web_open.reset_mock()
+            res = open_site(name)
+            self.assertEqual(res, f"Opening {name}.")
+            mock_web_open.assert_called_once_with(expected_url)
+
+        # 2. Raw URLs
+        mock_web_open.reset_mock()
+        res_url = open_site("https://news.ycombinator.com")
+        self.assertEqual(res_url, "Opening https://news.ycombinator.com.")
+        mock_web_open.assert_called_once_with("https://news.ycombinator.com")
+
+        mock_web_open.reset_mock()
+        res_domain = open_site("example.com")
+        self.assertEqual(res_domain, "Opening example.com.")
+        mock_web_open.assert_called_once_with("https://example.com")
+
+        # 3. Unrecognized site
+        mock_web_open.reset_mock()
+        res_unknown = open_site("nonexistentrandomsite")
+        self.assertEqual(res_unknown, "I don't know that site yet.")
+        mock_web_open.assert_not_called()
+
+    @patch("main.speak")
+    @patch("webbrowser.open")
+    def test_execute_command_web_actions(self, mock_web_open, mock_speak):
+        """Test hybrid command router execution for search and open website commands."""
+        import main
+
+        # 1. Voice search keyword matches
+        main.execute_command("search the web for quantum computing")
+        mock_speak.assert_called_with("Searching the web for quantum computing.")
+        mock_web_open.assert_called_with("https://www.google.com/search?q=quantum+computing")
+
+        main.execute_command("google python tutorials")
+        mock_speak.assert_called_with("Searching the web for python tutorials.")
+
+        # 2. Open known site keyword match
+        main.execute_command("open github")
+        mock_speak.assert_called_with("Opening github.")
+        mock_web_open.assert_called_with("https://github.com")
+
+        # 3. Open website with unknown site
+        main.execute_command("open website somerandomsite123")
+        mock_speak.assert_called_with("I don't know that site yet.")
+
+    @patch("main.classify_intent")
+    @patch("main.speak")
+    @patch("webbrowser.open")
+    def test_execute_command_web_actions_llm_fallback(self, mock_web_open, mock_speak, mock_classify):
+        """Test LLM fallback branch for SEARCH and OPEN_WEBSITE intents."""
+        import main
+
+        # LLM SEARCH fallback
+        mock_classify.return_value = {"intent": "SEARCH", "params": {"query": "deep learning models"}}
+        main.execute_command("find out about deep learning models")
+        mock_speak.assert_called_with("Searching the web for deep learning models.")
+        mock_web_open.assert_called_with("https://www.google.com/search?q=deep+learning+models")
+
+        # LLM OPEN_WEBSITE fallback
+        mock_classify.return_value = {"intent": "OPEN_WEBSITE", "params": {"site_name": "reddit"}}
+        main.execute_command("navigate over to reddit")
+        mock_speak.assert_called_with("Opening reddit.")
+        mock_web_open.assert_called_with("https://www.reddit.com")
+
+    @patch("skills.spotify_skill.get_spotify_credentials")
+    def test_spotify_skill_unconfigured(self, mock_creds):
+        """Test Spotify skill returns clear error message when credentials are missing."""
+        from skills.spotify_skill import play_track, pause_playback
+
+        mock_creds.return_value = (None, None, "http://localhost:8888/callback")
+        res_play = play_track("queen bohemian rhapsody")
+        self.assertIn("Spotify is not configured yet", res_play)
+
+        res_pause = pause_playback()
+        self.assertIn("Spotify is not configured yet", res_pause)
+
+    @patch("skills.spotify_skill.get_spotify_client")
+    def test_spotify_skill_no_active_device(self, mock_get_client):
+        """Test Spotify skill alerts user when no Spotify device session is found."""
+        from skills.spotify_skill import play_track, pause_playback, resume_playback, next_track, previous_track
+
+        mock_sp = MagicMock()
+        mock_sp.current_playback.return_value = None
+        mock_sp.devices.return_value = {"devices": []}
+        mock_get_client.return_value = (mock_sp, None)
+
+        expected_msg = "I don't see an active Spotify session — open Spotify on a device first."
+        self.assertEqual(play_track("blinding lights"), expected_msg)
+        self.assertEqual(pause_playback(), expected_msg)
+        self.assertEqual(resume_playback(), expected_msg)
+        self.assertEqual(next_track(), expected_msg)
+        self.assertEqual(previous_track(), expected_msg)
+
+    @patch("skills.spotify_skill.get_spotify_client")
+    def test_spotify_skill_playback_controls_success(self, mock_get_client):
+        """Test successful playback commands with active device."""
+        from skills.spotify_skill import play_track, pause_playback, resume_playback, next_track, previous_track
+
+        mock_sp = MagicMock()
+        mock_sp.current_playback.return_value = {
+            "device": {"id": "dev123", "name": "PC", "is_active": True}
+        }
+        mock_sp.devices.return_value = {
+            "devices": [{"id": "dev123", "name": "PC", "is_active": True}]
+        }
+        mock_sp.search.return_value = {
+            "tracks": {
+                "items": [{
+                    "name": "Blinding Lights",
+                    "artists": [{"name": "The Weeknd"}],
+                    "uri": "spotify:track:0VjIjW4GlUZAMYd2vXMi3b",
+                }]
+            }
+        }
+        mock_get_client.return_value = (mock_sp, None)
+
+        # 1. Play track
+        res_play = play_track("blinding lights")
+        self.assertEqual(res_play, "Playing Blinding Lights by The Weeknd on Spotify.")
+        mock_sp.start_playback.assert_called_with(
+            device_id="dev123",
+            uris=["spotify:track:0VjIjW4GlUZAMYd2vXMi3b"]
+        )
+
+        # 2. Pause
+        res_pause = pause_playback()
+        self.assertEqual(res_pause, "Pausing music.")
+        mock_sp.pause_playback.assert_called_with(device_id="dev123")
+
+        # 3. Resume
+        res_resume = resume_playback()
+        self.assertEqual(res_resume, "Resuming music.")
+        mock_sp.start_playback.assert_called_with(device_id="dev123")
+
+        # 4. Next
+        res_next = next_track()
+        self.assertEqual(res_next, "Skipping to the next song.")
+        mock_sp.next_track.assert_called_with(device_id="dev123")
+
+        # 5. Previous
+        res_prev = previous_track()
+        self.assertEqual(res_prev, "Going back to the previous song.")
+        mock_sp.previous_track.assert_called_with(device_id="dev123")
+
+    @patch("main.speak")
+    @patch("main.spotify_play")
+    @patch("main.spotify_pause")
+    @patch("main.spotify_resume")
+    @patch("main.spotify_next")
+    @patch("main.spotify_previous")
+    def test_execute_command_spotify_keywords(
+        self, mock_prev, mock_next, mock_res, mock_pause, mock_play, mock_speak
+    ):
+        """Test main.execute_command keyword routing for Spotify playback commands."""
+        import main
+
+        mock_play.return_value = "Playing Starboy by The Weeknd on Spotify."
+        mock_pause.return_value = "Pausing music."
+        mock_res.return_value = "Resuming music."
+        mock_next.return_value = "Skipping to the next song."
+        mock_prev.return_value = "Going back to the previous song."
+
+        # Play on Spotify
+        main.execute_command("play Starboy on Spotify")
+        mock_play.assert_called_with("Starboy")
+        mock_speak.assert_called_with("Playing Starboy by The Weeknd on Spotify.")
+
+        # Pause music
+        main.execute_command("pause music")
+        mock_pause.assert_called_once()
+        mock_speak.assert_called_with("Pausing music.")
+
+        # Resume music
+        main.execute_command("resume music")
+        mock_res.assert_called_once()
+        mock_speak.assert_called_with("Resuming music.")
+
+        # Next song / skip song
+        main.execute_command("skip song")
+        mock_next.assert_called_once()
+        mock_speak.assert_called_with("Skipping to the next song.")
+
+        # Previous song
+        main.execute_command("previous song")
+        mock_prev.assert_called_once()
+        mock_speak.assert_called_with("Going back to the previous song.")
+
+    @patch("main.classify_intent")
+    @patch("main.speak")
+    @patch("main.spotify_play")
+    def test_execute_command_spotify_llm_fallback(self, mock_play, mock_speak, mock_classify):
+        """Test LLM fallback branch for SPOTIFY_PLAY intent."""
+        import main
+
+        mock_play.return_value = "Playing Levitating by Dua Lipa on Spotify."
+        mock_classify.return_value = {"intent": "SPOTIFY_PLAY", "params": {"query": "Levitating"}}
+
+        main.execute_command("put on Levitating on Spotify please")
+        mock_play.assert_called_with("Levitating")
+        mock_speak.assert_called_with("Playing Levitating by Dua Lipa on Spotify.")
+
 if __name__ == "__main__":
     unittest.main()
+
